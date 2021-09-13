@@ -1,0 +1,896 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+<p>***Author: Dhanush Kobal*** </p>
+<p>***Project Name: Regression analysis***</p>
+<p>We are going to do another data analysis on house price data and see how accurate our analysis will be</p>
+
+<p>***Evaluation metric:*** $\sqrt{\frac{1}{n} \sum_{i=1}^n (log(y_{obs}+1)-log(y_{pred}+1))^2}$</p>
+<p>We will assume that the ***train data*** is a good representative of the ***test data***</p>
+```{r, echo=FALSE}
+rm(list=ls())
+```
+
+```{r, echo=FALSE}
+library(mlr)
+library(tidyverse)
+library(ggplot2)
+library(parallel)
+library(parallelMap)
+library(FSelector)
+library(FSelectorRcpp)
+```
+
+<p>We will first see how the data is presented</p>
+```{r, echo=FALSE}
+# uploading and combining data
+
+library(readr)
+train.kaggle <- read_csv("/Users/dhanushkobal/Desktop/2021\ Projects/Kaggle/House\ price\ prediction/train.csv")
+test.kaggle <- read_csv("/Users/dhanushkobal/Desktop/2021\ Projects/Kaggle/House\ price\ prediction/test.csv")
+key.values<- read_csv("/Users/dhanushkobal/Desktop/2021\ Projects/Kaggle/House\ price\ prediction/sub.csv")
+train.kaggle<-as_tibble(train.kaggle)
+test.kaggle<-as_tibble(test.kaggle)
+nrow(train.kaggle);nrow(test.kaggle)
+answers<-key.values$SalePrice
+combined.data<-mutate(bind_rows(train.kaggle , test.kaggle)) # combining train and test data
+head(combined.data)
+```
+
+```{r, echo=FALSE}
+# renaming variables
+
+colnames(combined.data)[colnames(combined.data) %in% c("1stFlrSF" , "2ndFlrSF" , "3SsnPorch")]<-c("X1stFlrSF",  "X2ndFlrSF" , "X3SsnPorch")
+
+colnames(train.kaggle)[colnames(train.kaggle) %in% c("1stFlrSF" , "2ndFlrSF" , "3SsnPorch")]<-c("X1stFlrSF",  "X2ndFlrSF" , "X3SsnPorch")
+
+colnames(test.kaggle)[colnames(test.kaggle) %in% c("1stFlrSF" , "2ndFlrSF" , "3SsnPorch")]<-c("X1stFlrSF",  "X2ndFlrSF" , "X3SsnPorch")
+```
+
+
+```{r, echo=FALSE}
+# plotting missing values
+
+naniar::gg_miss_var(combined.data %>% dplyr::select(-SalePrice)) + theme(text = element_text(size=6))
+
+combined.data<-combined.data %>% dplyr::select(-c(LotFrontage ,Alley, FireplaceQu, PoolQC,Fence, MiscFeature,
+                                                  FullBath)) # removing variables
+
+combined.data<-combined.data %>% mutate_if(sapply(combined.data, is.character), as.factor) 
+#converting things to factors
+```
+
+<p>We will look at all the numerical variables to first see if we need to convert them into factors</p>
+```{r, echo=FALSE, results='hide',fig.keep='all'}
+for(i in colnames(Filter(is.numeric, combined.data))){
+  hist(combined.data[train.kaggle$Id,] %>% pull(i), main= i)
+}
+combined.data<-mutate_at(combined.data, .vars = c("MSSubClass", "OverallQual", "OverallCond", "BsmtFullBath", "BsmtHalfBath", "HalfBath", "BedroomAbvGr", "KitchenAbvGr", "TotRmsAbvGrd", "Fireplaces", "GarageCars", "MoSold"),.funs = as.factor)
+```
+
+---
+<p>A preview of our ***updated*** data</p>
+```{r, echo=FALSE}
+head(combined.data, n=2)
+```
+
+---
+<p style="font-size:30px"> Outlier analysis</p>
+<p>We will see each numeric variables and see if we need to delete any observation</p>
+
+```{r, echo=FALSE, results='hide',fig.keep='all'}
+for(i in colnames(Filter(is.numeric, combined.data))){
+  par(mfrow = c(1,2))
+  hist(combined.data[train.kaggle$Id,] %>% pull(i), main= i)
+  plot(combined.data[train.kaggle$Id,] %>% pull(i) , y = combined.data[train.kaggle$Id,]$SalePrice, 
+             main = i)
+}
+```
+
+<p>We will see how representative the ***train data*** is with the ***test data***, so I will create  ***factor*** that tells us which observation is a  ***test data or train data***</p>
+
+```{r, echo=FALSE}
+a<-ifelse(combined.data$Id %in% train.kaggle$Id , "train.data" , "test.data")
+combined.data$What.kind.of.data<-as.factor(a)
+```
+
+
+<p style="font-size:20px"> Outlier analysis: Lotarea</p>
+```{r, echo=FALSE}
+a<-which(combined.data[train.kaggle$Id , ]$LotArea>100000)
+
+ggplot(data = filter(combined.data), aes(x= 1:length(LotArea) , y = LotArea)) + geom_point() + facet_wrap(~What.kind.of.data) + ggtitle("Outlier not removed")
+
+ggplot(data = filter(combined.data, !(Id %in% c(a))), aes(x= 1:length(LotArea) , y = LotArea)) + geom_point() + facet_wrap(~What.kind.of.data) + ggtitle("Outlier removed")
+
+combined.data<-filter(combined.data, !(Id %in% c(a)))
+```
+
+<p style="font-size:20px"> Outlier analysis: MasVnrArea</p>
+```{r, echo=FALSE}
+ggplot(data = filter(combined.data), aes(x= 1:length(MasVnrArea) , y = MasVnrArea)) + geom_point() + facet_wrap(~What.kind.of.data) + ggtitle("Outlier not removed")
+
+a<-combined.data$Id[which(combined.data[train.kaggle$Id, ]$MasVnrArea>1500)];a
+
+ggplot(data = filter(combined.data, !(Id %in% c(a))), aes(x= 1:length(MasVnrArea) , y = MasVnrArea)) + geom_point() + facet_wrap(~What.kind.of.data) + ggtitle("Outlier removed")
+
+combined.data<-filter(combined.data, !(Id %in% c(a)))
+```
+
+<p style="font-size:20px"> Outlier analysis: BsmtFinSF1</p>
+```{r, echo=FALSE}
+ggplot(data = filter(combined.data), aes(x= 1:length(BsmtFinSF1) , y = BsmtFinSF1)) + geom_point() + facet_wrap(~What.kind.of.data) + ggtitle("Outlier not removed")
+
+a<-combined.data$Id[which(combined.data[train.kaggle$Id, ]$BsmtFinSF1>4000)];a
+
+ggplot(data = filter(combined.data, !(Id %in% c(a))), aes(x= 1:length(BsmtFinSF1) , y = BsmtFinSF1)) + geom_point() + facet_wrap(~What.kind.of.data) + ggtitle("Outlier removed")
+
+combined.data<-filter(combined.data, !(Id %in% c(a)))
+```
+
+<p style="font-size:20px"> Outlier analysis: X3SsnPorch</p>
+<p>We removed 1 outlier</p>
+
+```{r, echo=FALSE}
+ggplot(data = filter(combined.data), aes(x= 1:length(X3SsnPorch) , y = X3SsnPorch)) + geom_point() + facet_wrap(~What.kind.of.data) + ggtitle("Outlier not removed")
+
+a<-combined.data$Id[which(combined.data[train.kaggle$Id, ]$X3SsnPorch>500)];a
+
+ggplot(data = filter(combined.data, !(Id %in% c(a))), aes(x= 1:length(X3SsnPorch) , y = X3SsnPorch)) + geom_point() + facet_wrap(~What.kind.of.data) + ggtitle("Outlier removed")
+
+combined.data<-filter(combined.data, !(Id %in% c(a)))
+```
+
+<p>The rest of the data seems like a good representative of the ***test data***</p>
+<p>We are first going impute the dataset to do further analysis.</p>
+-----
+
+<p style="font-size:30px"> Data imputation</p>
+<p style="font-size:15px"> We will impute the ***numerical*** variables using the ***Mode*** and we will impute the categorical variable with a ***ML Algorithm (naiveBayes)***</p>
+
+```{r, echo=FALSE}
+set.seed(1)
+num<-impute(as.data.frame(Filter(is.numeric , combined.data)), classes = list(numeric = imputeMedian()))
+combined.data<-combined.data %>% select(-RoofMatl)
+train.kaggle<-train.kaggle %>% select(-RoofMatl)
+test.kaggle<-test.kaggle %>% select(-RoofMatl)
+
+fac<-impute(as.data.frame(Filter(is.factor ,combined.data)), 
+            classes = list(factor = imputeLearner("classif.naiveBayes")))
+
+combined.data<-bind_cols(num$data ,fac$data )
+```
+
+<p style="font-size:15px"> Now it is important for us to see if the levels in the test and train data are the same.</p>
+
+<p style="font-size:15px"> Now we will check how well the imputation went</p>
+```{r, echo=FALSE, results='hide',fig.keep='all'}
+for(i in colnames(Filter(is.numeric, combined.data))){
+  par(mfrow = c(1,2))
+  hist(train.kaggle %>% dplyr::pull(i) , main = paste("Not imputed" , i))
+  hist(combined.data[train.kaggle$Id,] %>% dplyr::pull(i), main = "Imputed")
+}
+```
+
+```{r, echo=FALSE, results='hide',fig.keep='all'}
+for (i in colnames(Filter(is.factor , combined.data))){
+  if(i == "What.kind.of.data"){break}
+  
+  par(mfrow = c(1,2))
+  barplot(table(train.kaggle %>% dplyr::pull(i)), main = paste("Not imputed" , i))
+  barplot(table(combined.data[train.kaggle$Id,] %>% dplyr::pull(i)), main = "imputed")
+  
+}
+```
+
+<p style="font-size:15px"> The imputed values seems reasonable. Yes this does produce a ***bias*** in our model, however, this bias might lead to better performance</p>
+
+-----
+<p style="font-size:30px"> Feature engineering</p>
+<p style="font-size:15px"> Feature engineering: Street</p>
+
+```{r, echo=FALSE}
+ggplot(data = combined.data[train.kaggle$Id,] , aes(x = Street, y = SalePrice)) + geom_boxplot()
+
+a<-ifelse(combined.data$Street == "Grvl" , "bad.Street" , "good.Street")
+
+combined.data$Street.factor<-as.factor(a)
+```
+
+<p style="font-size:15px"> Feature engineering: LotShape</p>
+
+```{r}
+ggplot(data = combined.data[train.kaggle$Id, ] , aes(x = LotShape, y = OverallQual)) + geom_bar(stat = "identity")
+
+a<-ifelse(combined.data$LotShape=="Reg" , "good.overallQual",
+          ifelse(combined.data$LotShape %in% c("IR1") , "medium.overallQual" , "bad.OverallQual"))
+
+combined.data$LotArea.OverallQual.factor<-as.factor(a)
+```
+
+<p style="font-size:15px"> Feature engineering: Neighborhood</p>
+
+```{r, echo=FALSE}
+c<-combined.data %>% group_by(Neighborhood) %>% summarise(m = mean(as.numeric(OverallQual)))
+ggplot(data = c,aes(x = Neighborhood , y = m)) + geom_point() + theme(axis.text.x = element_text(angle = 90))
+
+x<-c$Neighborhood[which(c$m<=5)]
+y<-c$Neighborhood[which(c$m>5 & c$m<=7)]
+z<-c$Neighborhood[which(c$m>7)]
+
+a<-ifelse(combined.data$Neighborhood %in% c(as.character(x)) , "low.overallqual.neigh",
+          ifelse(combined.data$Neighborhood %in% c(as.character(y)) , "med.overallqual.neigh", "high.overall.neigh"))
+
+combined.data$Overallqual.neigh<-as.factor(a)
+```
+
+<p style="font-size:15px"> Feature engineering: OverQuall</p>
+```{r, echo=FALSE}
+a<-ifelse(as.numeric(combined.data$OverallQual)<=3 , "low.overall.saleprice" , 
+          ifelse(as.numeric(combined.data$OverallQual)>3 & as.numeric(combined.data$OverallQual)<=7 , "medium.overall.saleprice" , "high.overall.saleprice"))
+
+combined.data$OverallQual.salecond<-as.factor(a)
+```
+
+<p style="font-size:15px"> Feature engineering: OverCond</p>
+
+```{r, echo=FALSE}
+c<-combined.data %>% group_by(OverallCond) %>% summarise(m = mean(as.numeric(OverallQual)))
+ggplot(data = c,aes(x = OverallCond , y = m)) + geom_point() + theme(axis.text.x = element_text(angle = 90))
+
+a<-ifelse(combined.data$OverallCond %in% c(1:4) , "low.overall.qual",
+          ifelse(combined.data$OverallCond %in% c(5,9) , "high.overall.qual" , "med.overall.qual"))
+
+combined.data$OverallCond.overallqual<-as.factor(a)
+```
+
+<p style="font-size:15px"> Feature engineering: TotRmsAbvGrd</p>
+```{r, echo=FALSE}
+a<-ifelse(combined.data$TotRmsAbvGrd %in% c(2:6) , "low.sale.totrms", 
+          ifelse(combined.data$TotRmsAbvGrd %in% c(7:9) , "med.sale.totrms" , "high.sale.totrms"))
+
+
+combined.data$TotRmsAbvGrd.saleprice<-as.factor(a)
+```
+
+-----
+<p style="font-size:30px"> Quantitative feature engineering</p>
+
+<p style="font-size:15px"> TSNE</p>
+
+```{r, echo=FALSE}
+library(Rtsne)
+set.seed(1)
+TSNE<-select(combined.data , -SalePrice) %>%
+  Rtsne(perplexity = 30)
+
+combined.data$tsne.y1<-TSNE$Y[,1]
+combined.data$tsne.y2<-TSNE$Y[,2]
+
+head(combined.data$tsne.y1)
+```
+
+
+<p style="font-size:15px"> Other numerical factors that might be useful</p>
+
+```{r, echo=FALSE}
+combined.data$XstTotalFloor<-combined.data$X1stFlrSF + combined.data$X2ndFlrSF
+combined.data$BsmtFinSF1_2_add<-combined.data$BsmtFinSF1 + combined.data$BsmtFinSF2
+combined.data$YearBuilt.as.factor<-as.factor(cut(combined.data$YearBuilt, 
+                                                 breaks = seq(1850,2025, by = 25), labels = c(1:7)))
+combined.data$YearRemodAdd.as.factor<-unique(cut(combined.data$YearRemodAdd, seq(1925, 2025, by = 25), labels = c(1:4)))
+
+combined.data$total_sf<-combined.data$BsmtFinSF1 + combined.data$BsmtFinSF2 + combined.data$X1stFlrSF+ combined.data$X2ndFlrSF
+
+combined.data$total_bsmt_bath<- as.factor(as.numeric(combined.data$BsmtFullBath) + 0.5 * as.numeric(combined.data$BsmtHalfBath))
+
+combined.data$total_porch<-combined.data$OpenPorchSF + combined.data$X3SsnPorch + combined.data$ScreenPorch + combined.data$EnclosedPorch
+
+```
+
+
+<p style="font-size:15px"> Correlation Plot</p>
+
+```{r, echo=FALSE}
+corrplot::corrplot(cor(Filter(is.numeric, combined.data)))
+
+```
+
+-----
+
+<p style="font-size:15px"> We will see if are any data imbalances</p>
+```{r, echo=FALSE}
+a<-Filter(is.factor,filter(combined.data, What.kind.of.data == "train.data")) %>% map(function(x) {round(prop.table(table(x)), 2)})
+
+a
+```
+
+<p style="font-size:15px"> Split the data into train and test and feature importances</p>
+
+```{r, echo=FALSE}
+# Split the data into test and train data
+
+train.data<-filter(combined.data, What.kind.of.data=="train.data")
+test.data<-filter(combined.data, What.kind.of.data=="test.data")
+
+train.data<- train.data %>% select(-What.kind.of.data)
+test.data<-test.data %>% select(-What.kind.of.data)
+
+```
+
+
+```{r, echo=FALSE}
+# RF importance plot
+set.seed(1)
+train.task.feat.1<-makeRegrTask(data = train.data, target = "SalePrice")
+a.filter<-generateFilterValuesData(train.task.feat.1, method = "randomForestSRC_importance")
+plotFilterValues(a.filter) + theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+<p style="font-size:15px"> We will create various ***transformations*** for each training and test data</p>
+
+```{r, echo=FALSE}
+train.data.log<-train.data
+
+f.log<-function(x){return(log(x+1))}
+train.data.log<-train.data.log %>% mutate(across(c(where(is.numeric), -Id, -SalePrice, -tsne.y1, -tsne.y2), f.log))
+test.data.log<-test.data
+test.data.log<-test.data.log %>% mutate(across(c(where(is.numeric), -Id, -tsne.y1, -tsne.y2), f.log))
+test.data.log$SalePrice<-NA
+
+f.sqrt<-function(x){return(sqrt(x))}
+train.data.root<-train.data
+train.data.root<-train.data.root %>% mutate(across(c(where(is.numeric), -Id,-SalePrice, -tsne.y1,-tsne.y2), f.sqrt))
+
+test.data.root<-test.data
+test.data.root<-test.data.root %>% mutate(across(c(where(is.numeric), -Id ,-SalePrice, -tsne.y1, -tsne.y2), f.sqrt))
+test.data.root$SalePrice<-NA
+
+
+train.data.scale<-train.data %>% mutate(across(c(where(is.numeric), -SalePrice), scale))
+test.data.scale<-test.data %>% mutate(across(c(where(is.numeric), -SalePrice), scale))
+train.data.scale$SalePrice<-train.data.scale$SalePrice/1000000
+test.data.scale$SalePrice<-NA
+
+min.max.function<-function(x){return((x-min(x))/(max(x)-min(x)))}
+train.data.min.max<-train.data %>% mutate(across(c(where(is.numeric), -SalePrice), min.max.function))
+test.data.min.max<-test.data %>% mutate(across(c(where(is.numeric), -SalePrice), min.max.function))
+train.data.min.max$SalePrice<-train.data.min.max$SalePrice/1000000
+test.data.min.max$SalePrice<-NA
+
+# scales::rescale(test.data, to=c(0,1))
+```
+
+
+```{r, echo=FALSE}
+# learning curve function
+
+
+plot.learning.curve<-function(model, data, description){
+  CV = makeResampleDesc(method = "CV", iters = 5, predict = "both")
+  lc2 = generateLearningCurveData(learners = model , task = data,
+  percs = seq(0.1, 1, by = 0.1),
+  measures = list(rmsle, setAggregation(rmsle, train.mean)), resampling = CV,
+  show.info = FALSE)
+  print(plotLearningCurve(lc2, facet = "learner") + theme_bw() + ggtitle(label = paste(description)))
+  return(lc2$data)
+}
+
+```
+
+
+<p style="font-size:15px"> We will create a lasso model for ***feature selection***</p>
+
+```{r, echo=FALSE}
+
+feat<-c((a.filter$data %>% arrange(desc(value)))$name[1:70], "SalePrice")
+set.seed(3)
+ll<-900
+lasso.1 <- makeLearner("regr.glmnet", alpha = 1, id = "lasso", par.vals = list(s=ll, standardize =TRUE))
+train.task.lasso.feat.sel<-makeRegrTask(data = train.data  , target = "SalePrice")
+
+holdout <- makeResampleDesc(method = "CV", iters = 3, stratify = FALSE)
+holdoutCV <-resample(learner = lasso.1, task = train.task.lasso.feat.sel, 
+                      resampling = holdout, measures = list(rmsle))
+
+
+tuned.lasso.feat.sel<-train(lasso.1 , train.task.lasso.feat.sel)
+a<-getLearnerModel(tuned.lasso.feat.sel)
+lassoCoefs <-coef(a , s = ll)
+
+important.lasso.features<-data.frame(lasso.par = which(lassoCoefs[,1]!=0))
+
+a<-colnames(train.data)
+b<-colnames(t(important.lasso.features))
+
+myfun <- function(source_vec, dest_vec) {
+  purrr::map_dbl(source_vec, ~ which(stringr::str_detect(., dest_vec))[1])
+}
+
+important.lasso.features<-na.omit(unique(colnames(train.data)[myfun(b, a)]))
+important.lasso.features<-append(important.lasso.features , "SalePrice")
+#important.lasso.features
+
+bb.test.lasso.feat<-predict(tuned.lasso.feat.sel , newdata = test.data)$data$response
+
+learning.curve.lasso.1<-plot.learning.curve(lasso.1 , train.task.lasso.feat.sel, "lasso - train.data.root")
+
+bb.train.lasso.feat<-predict(tuned.lasso.feat.sel, newdata = train.data.root)$data$response
+
+```
+
+
+<p style="font-size:15px"> We will also create a  ***bagging elastic-net model*** we well</p>
+
+```{r, echo=FALSE}
+
+ll<-1200
+set.seed(1)
+elastic.net<-makeLearner("regr.glmnet", id = "elastic.net", par.vals = list(alpha = 0.5 , s = ll))
+bag.lrn.enet = makeBaggingWrapper(elastic.net , bw.iters = 50, bw.replace = TRUE, bw.feats = 0.75)
+train.task.enet<-makeRegrTask(data = train.data,target = "SalePrice")
+
+holdout <- makeResampleDesc(method = "CV", iters = 3, stratify = FALSE)
+holdoutCV <- resample(learner = bag.lrn.enet, task = train.task.enet, 
+                      resampling = holdout, measures = list(rmsle))
+
+tuned.bagged.enet<-train(bag.lrn.enet , train.task.enet)
+
+bb.train.bagged.enet<-predict(tuned.bagged.enet , newdata = train.data)$data$response
+
+bb.test.bagged.enet<-predict(tuned.bagged.enet , newdata = test.data)$data$response
+
+```
+
+
+<p style="font-size:15px"> We will also create a  ***SVM*** we well</p>
+
+
+```{r, echo=FALSE}
+p<-82
+feat<-c((a.filter$data %>% arrange(desc(value)))$name[1:p], "SalePrice")
+set.seed(1)
+svm.reg<-makeLearner("regr.svm", par.vals = list(cost = 4 , nu = 0.5 ,tolerance = 0.001 ))
+train.task.svm<-makeRegrTask(data =  train.data %>% select(feat)   , target = "SalePrice")
+
+holdout <- makeResampleDesc(method = "CV", iters = 3, stratify = FALSE)
+holdoutCV <- resample(learner = svm.reg, task = train.task.svm, 
+                      resampling = holdout, measures = list(rmsle))
+
+tuned.svm<-train(svm.reg , train.task.svm)
+
+learning.curve.svm.1<-plot.learning.curve(svm.reg , train.task.svm , "svm.1 - train.data")
+
+svm<-e1071::svm(SalePrice ~ . , data = train.data %>% select(feat), kernel = "radial", 
+                tolerance = 0.001,type = "eps-regression", nu = 0.5, cost = 4)
+bb.test.svm<-predict(svm , newdata = test.data%>% select(feat, -SalePrice))
+
+
+bb.train.svm<-predict(svm , newdata = train.data %>% select(feat))
+
+```
+
+
+<p style="font-size:15px"> We will also create a  ***SVM 2*** we well. ***The warning can be safely ignored***</p>
+
+```{r, echo=FALSE}
+
+set.seed(1)
+svm.reg.2<-makeLearner("regr.svm", par.vals = list(cost = 5, tolerance = 0.000001 , nu = 0.5, scale = TRUE))
+train.task.svm<-makeRegrTask(data =  train.data %>% select(important.lasso.features), target = "SalePrice")
+
+
+holdout <- makeResampleDesc(method = "CV", iters = 3, stratify = FALSE)
+holdoutCV <- resample(learner = svm.reg.2, task = train.task.svm, 
+                      resampling = holdout, measures = list(rmsle))
+
+learning.curve.svm.2<-plot.learning.curve(svm.reg.2 , train.task.svm , "svm.2 - train.data %>% important lasso features")
+
+svm.2<-e1071::svm(SalePrice ~ . , data = train.data %>% select(important.lasso.features) , 
+                  kernel = "radial", tolerance = 0.000001,type = "eps-regression", nu = 0.5, cost = 5)
+
+bb.test.svm2<-predict(svm.2, newdata = test.data %>% select(important.lasso.features))
+bb.train.svm2<-predict(svm.2, newdata = train.data %>% select(important.lasso.features))
+
+```
+
+<p style="font-size:15px"> We will also create a  ***KSVM*** we well</p>
+
+```{r, echo=FALSE}
+
+p<-72
+feat<-c((a.filter$data %>% arrange(desc(value)))$name[1:p], "SalePrice")
+
+set.seed(2)
+library(kernlab)
+ksvm.reg<-makeLearner("regr.ksvm", par.vals = list(C = 2, epsilon = 0.001, nu = 0.2 ))
+train.task.ksvm<-makeRegrTask(data =  train.data %>% select(feat),
+                             target = "SalePrice")
+
+holdout <- makeResampleDesc(method = "CV", iters = 3, stratify = FALSE)
+holdoutCV <- resample(learner = ksvm.reg, task = train.task.ksvm, 
+                      resampling = holdout, measures = list(rmsle))
+
+ksvm<-kernlab::ksvm(SalePrice ~., data = train.data %>% select(feat) ,C = 2, epsilon = 0.0001, nu =0.2 )
+
+learning.curve.ksvm<-plot.learning.curve(ksvm.reg , train.task.ksvm, "ksvm - train.data %>% feat")
+
+bb.train.ksvm<-predict(ksvm, newdata = train.data %>% select(feat))
+
+bb.test.ksvm<-predict(ksvm, newdata = test.data %>% select(feat))
+
+```
+
+
+
+<p style="font-size:15px"> We will also create a  ***XGB*** we well</p>
+
+```{r, echo=FALSE}
+
+p<-60
+feat<-c((a.filter$data %>% arrange(desc(value)))$name[1:p], "SalePrice")
+
+set.seed(2)
+xgb<-makeLearner("regr.xgboost", par.vals = list(eta = 1, max_depth = 10, eval_metric = 'rmsle', 
+                                                 min_child_weight = 5, gamma = 10))
+xgb.task<-makeRegrTask(data = mutate_all(train.data %>% select(feat), as.numeric), target = "SalePrice")
+
+holdout <- makeResampleDesc(method = "CV", iters = 3, stratify = FALSE, predict = "both")
+holdoutCV <- resample(learner = xgb, task = xgb.task, 
+                      resampling = holdout, measures = list(rmsle))
+
+learning.curve.xgb<-plot.learning.curve(xgb , xgb.task, "xgb - train.data %>% feat")
+
+tuned.xgb<-train(xgb, xgb.task)
+
+bb.train.xgb<-predict(tuned.xgb , newdata = train.data %>% select(feat))
+
+bb.test.xgb<-predict(tuned.xgb , newdata = test.data %>% select(feat))$data$response
+
+```
+
+<p style="font-size:30px"> ***GLMBOOST***</p>
+
+
+```{r, echo=FALSE}
+p<-80
+feat<-c((a.filter$data %>% arrange(desc(value)))$name[1:p], "SalePrice")
+
+glm.boost<-makeLearner("regr.glmboost", par.vals = list(center = FALSE, mstop = 10000, nu = 1))
+glm.boost.task<-makeRegrTask(data = mutate_all(train.data %>% select(feat), as.numeric), target = "SalePrice")
+
+tuned.glm.boost<-train(glm.boost, glm.boost.task)
+
+holdout <- makeResampleDesc(method = "CV", iters = 5, stratify = FALSE, predict = "both")
+holdoutCV <- resample(learner = glm.boost, task = glm.boost.task, 
+                      resampling = holdout, measures = list(rmsle))
+
+learning.curve.glm.boost<-plot.learning.curve(xgb , xgb.task, "glm.boost - train.data %>% feat")
+
+bb.train.glm.boost<-predict(tuned.glm.boost, newdata = mutate_all(train.data %>% select(feat), as.numeric))$data$response
+
+bb.test.glm.boost<-predict(tuned.glm.boost, newdata = mutate_all(test.data %>% select(feat), as.numeric))$data$response
+
+```
+
+
+
+<p style="font-size:15px"> We will also create a  ***SVM 3*** we well</p>
+
+```{r, echo=FALSE}
+# No Learning curve or CV will be made since they will be similar as the other SVMs
+
+
+svm.reg.scale<-makeLearner("regr.svm" , par.vals = list(nu = 0.5, cost = 3 , tolerance = 0.001))
+p<-82
+
+feat<-c((a.filter$data %>% arrange(desc(value)))$name[1:p], "SalePrice")
+
+svm.scale<-e1071::svm(SalePrice ~ . , data = train.data %>% select(feat), kernel = "radial", 
+                tolerance = 0.001,type = "eps-regression", nu = 0.5, cost = 3)
+
+bb.train.svm.scale<-predict(svm.scale, newdata = train.data %>% select(feat, -SalePrice))
+bb.test.svm.scale<-predict(svm.scale, newdata = test.data %>% select(feat, -SalePrice))
+
+```
+
+
+
+```{r, echo=FALSE}
+# Stacked model dataframe
+
+set.seed(1)
+stacked.data.train<-data.frame(bb.train.lasso.feat, bb.train.bagged.enet, bb.train.svm, bb.train.svm2, 
+                               bb.train.ksvm[,1] , bb.train.xgb$data$response , bb.train.glm.boost,
+                               bb.train.svm.scale , train.data$SalePrice)
+colnames(stacked.data.train)<-c("lasso", "bagged.enet" , "svm" , "svm.2" , "ksvm" , "xgb" , "glm.boost",
+                                "svm.scale","SalePrice")
+
+stacked.data.test<-data.frame(bb.test.lasso.feat , bb.test.bagged.enet , bb.test.svm , bb.test.svm2,
+                              bb.test.ksvm[,1] , bb.test.xgb, bb.test.glm.boost, bb.test.svm.scale)
+colnames(stacked.data.test)<-c("lasso", "bagged.enet" , "svm" , "svm.2" , "ksvm" , "xgb" , "glm.boost",
+                               "svm.scale")
+```
+
+
+
+<p style="font-size:30px"> Stacking: Lasso Model</p>
+<p style="font-size:15px"> We will create a ***LASSO*** model as our ***superlearner***</p>
+<p style="font-size:15px"> The base learners were ***svm, and ksvm*** and I used a ***lasso model*** as our super-learner</p>
+
+```{r, echo=FALSE}
+set.seed(1)
+a<-c("svm" , "ksvm" ,  "SalePrice")
+stacked.lasso<-makeLearner("regr.glmnet" , alpha = 1, par.vals = list(s=900))
+stacked.train.task<-makeRegrTask(data = stacked.data.train %>% select(a), target = "SalePrice")
+tuned.stacked.lasso<-train(stacked.lasso , stacked.train.task)
+
+holdout <- makeResampleDesc(method = "CV", iters = 5, stratify = FALSE, predict = "both")
+holdoutCV <- resample(learner = stacked.lasso, task = stacked.train.task, 
+                      resampling = holdout, measures = list(rmsle))
+
+# select(a[-length(a)])
+
+bb.train.stacked<-predict(tuned.stacked.lasso , 
+                          newdata = stacked.data.train %>% select(a[-length(a)]))$data$response
+bb.test.stacked<-predict(tuned.stacked.lasso , newdata = stacked.data.test %>% select(a[-length(a)]))$data$response
+
+```
+
+```{r}
+stacked.data.train<-add_column(stacked.data.train , stacked.model = bb.train.stacked)
+stacked.data.test<-add_column(stacked.data.test , stacked.model = bb.test.stacked)
+```
+
+
+<p style="font-size:30px"> Stacking: Benchmarking</p>
+
+```{r}
+set.seed(2)
+svm.reg.scale<-makeLearner("regr.svm" , par.vals = list(nu = 0.5, cost = 3 , tolerance = 0.001), id = "svm.scale")
+ksvm.reg<-makeLearner("regr.ksvm", par.vals = list(C = 2, epsilon = 0.001, nu = 0.2), id = "ksvm")
+svm.reg.2<-makeLearner("regr.svm", par.vals = list(cost = 4, tolerance = 0.005 , nu = 0.5, scale = TRUE) , 
+                       id = "svm.reg2")
+svm.reg<-makeLearner("regr.svm", par.vals = list(cost = 4 , nu = 0.5 ,tolerance = 0.001 ), id = "svm")
+
+
+lrns = list(svm.reg, svm.reg.2, svm.reg.scale)
+train.task<-makeRegrTask(data = train.data %>% select(feat), target = "SalePrice")
+repcv = makeResampleDesc("RepCV" , folds = 3, rep = 5)
+
+b1<-benchmark(lrns, train.task, repcv, models = TRUE , measures = rmsle, show.info = FALSE)
+```
+
+
+```{r, echo=FALSE}
+set.seed(1)
+lrns = list(svm.reg.scale, ksvm.reg, svm.reg.2, svm.reg, xgb, glm.boost, lasso.1, elastic.net)
+stacked.learner.model.lasso<-makeStackedLearner(base.learners = lrns, 
+                                                super.learner = makeLearner("regr.glmnet", 
+                                                                            alpha = 1, par.vals = list(s=800)))
+
+lrns = list(xgb, glm.boost, stacked.learner.model.lasso)
+train.task<-makeRegrTask(data = mutate_all(train.data %>% select(feat), as.numeric), target = "SalePrice")
+repcv = makeResampleDesc("RepCV" , folds = 3, rep = 5)
+
+b2<-benchmark(lrns, train.task, repcv, models = TRUE , measures = rmsle, show.info = FALSE)
+```
+
+
+```{r, echo=FALSE}
+set.seed(2)
+lrns = list(lasso.1)
+train.task<-makeRegrTask(data = train.data.root %>% select(feat), target = "SalePrice")
+repcv = makeResampleDesc("RepCV" , folds = 3, rep = 5)
+
+b3<-benchmark(lrns, train.task, repcv, models = TRUE , measures = rmsle, show.info = FALSE)
+```
+
+
+```{r, echo=FALSE}
+set.seed(1)
+lrns = list(elastic.net)
+train.task<-makeRegrTask(data = train.data , target = "SalePrice")
+repcv = makeResampleDesc("RepCV" , folds = 3, rep = 5)
+
+b4<-benchmark(lrns, train.task, repcv, models = TRUE , measures = rmsle, show.info = FALSE)
+
+lrns = list(svm.reg.2)
+train.task<-makeRegrTask(data = train.data %>% select(important.lasso.features) , target = "SalePrice")
+repcv = makeResampleDesc("RepCV" , folds = 3, rep = 5)
+
+b5<-benchmark(lrns, train.task, repcv, models = TRUE , measures = rmsle, show.info = FALSE)
+```
+
+
+```{r, echo=FALSE}
+b1.data<-getBMRPerformances(b1)$`train.data %>% select(feat)`
+b2.data<-getBMRPerformances(b2)$`mutate_all(train.data %>% select(feat), as.numeric)`
+b3.data<-getBMRPerformances(b3)$`train.data.root %>% select(feat)`
+b4.data<-getBMRPerformances(b4)$train.data
+b5.data<-getBMRPerformances(b5)$`train.data %>% select(important.lasso.features)`
+
+bench.mark.data<-data.frame(svm1.feat = b1.data$svm,
+                            svm2.feat = b1.data$svm.reg2,
+                            svm3.feat  = b1.data$svm.scale,
+                            xgboost.feat = b2.data$regr.xgboost,
+                            glmboost.feat = b2.data$regr.glmboost,
+                            lasso.model.stacked.feat = b2.data$stack,
+                            lasso.feat =b3.data$lasso,
+                             e.net.all.var = b4.data$elastic.net,
+                            svm4.lasso.features = b5.data$svm.reg2)
+
+```
+
+<p style="font-size:30px"> Stacking: Benchmarking boxplots</p>
+<p style="font-size:15px"> We see that ***benchmarking*** averaged the results of all the ML models</p>
+<p style="font-size:15px"> We can create another ***stacking model*** to increase performance, or we can manually adjust the weights to see how well we do it.</p>
+
+```{r, echo=FALSE}
+s.df<-reshape2::melt(bench.mark.data %>% select_if(is.double))
+ggplot(data = s.df, aes(x = variable , y = value)) + geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ggtitle("Boxplot of each ML models")
+```
+
+<p style="font-size:30px"> Stacking: Manuel weights based on RMSLE</p>
+
+```{r, echo=FALSE}
+rmsle.loss<-c()
+for(i in 1:5){
+  set.seed(i)
+  library(splitTools)
+  my.data.split<-stacked.data.train %>% select(c("svm","ksvm",  "glm.boost", "stacked.model", "SalePrice"))
+  index<-partition(stacked.data.train$SalePrice , p = c(train = 0.3, valid = 0.3, test = 0.3))
+  aa<-my.data.split[index$train,]
+  bb<-my.data.split[index$valid,]
+  cc<-my.data.split[index$test,]
+
+  a<-0.6
+  b<-0
+  c<-0.2
+  d<-0.7
+  
+
+  pp.1<-apply(aa %>% select(-SalePrice) , 1, 
+            function(x){return(weighted.mean(x, w = c(a,b,c,d)))})
+
+  pp.2<-apply(bb %>% select(-SalePrice) , 1, 
+            function(x){return(weighted.mean(x, w = c(a,b,c,d)))})
+
+  pp.3<-apply(cc %>% select(-SalePrice) , 1, 
+            function(x){return(weighted.mean(x, w = c(a,b,c,d)))})
+
+  rmsle.1<-sqrt(mean((log(pp.1 +1) - log(aa$SalePrice))^2))
+  rmsle.2<-sqrt(mean((log(pp.2 +1) - log(bb$SalePrice))^2))
+  rmsle.3<-sqrt(mean((log(pp.3 +1) - log(cc$SalePrice))^2))
+
+  rmsle.loss<-c(rmsle.loss ,rmsle.1 , rmsle.2 , rmsle.3 )
+}
+```
+
+
+<p style="font-size:15px"> It is very evident that the custom weights we have created gave us the greatest overall performance. We will use these custom weights for represent our test data as well.</p>
+
+```{r, echo=FALSE}
+bench.mark.data<-add_column(bench.mark.data , custom.weights =rmsle.loss )
+s.df<-reshape2::melt(bench.mark.data %>% select_if(is.double))
+ggplot(data = s.df, aes(x = variable , y = value)) + geom_boxplot() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+<p>The final predictions</p>
+```{r, echo=TRUE}
+
+z<-stacked.data.test %>% select(c("svm","ksvm",  "glm.boost", "stacked.model"))
+
+a<-0.6
+b<-0
+c<-0.2
+d<-0.7
+pp<-apply(z , 1, function(x){return(weighted.mean(x, w = c(a,b,c,d)))})
+print(head(pp))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
