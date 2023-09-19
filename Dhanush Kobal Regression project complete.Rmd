@@ -3,7 +3,6 @@ title: "R Notebook"
 output: html_notebook
 ---
 
-<p>***Author: Dhanush Kobal*** </p>
 <p>***Project Name: Regression analysis***</p>
 <p>We are going to do another data analysis on house price data and see how accurate our analysis will be</p>
 
